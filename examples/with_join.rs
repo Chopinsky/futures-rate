@@ -25,7 +25,7 @@ fn build_fut(
     offset: i32,
     token_pool: &TokenPool,
 ) -> Semaphore<Vec<i32>, impl Future<Output = Vec<i32>>> {
-    token_pool.take_semaphore(async move {
+    token_pool.register(async move {
         let mut values = Vec::with_capacity(100);
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));

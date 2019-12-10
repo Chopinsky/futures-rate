@@ -69,7 +69,7 @@ impl TokenPool {
 //        self.inner.flavor = ratio;
     }
 
-    pub fn take_semaphore<R, F>(&self, fut: F) -> Semaphore<R, F>
+    pub fn register<R, F>(&self, fut: F) -> Semaphore<R, F>
     where
         R: Send + 'static,
         F: Future<Output = R> + 'static,

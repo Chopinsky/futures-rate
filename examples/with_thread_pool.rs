@@ -39,7 +39,7 @@ fn build_fut(
 ) -> Semaphore<(), impl Future<Output = ()>> {
     let tx_clone = tx.clone();
 
-    token_pool.take_semaphore(async move {
+    token_pool.register(async move {
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));
             tx_clone.unbounded_send(v).expect("Failed to send");
