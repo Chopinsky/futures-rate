@@ -2,6 +2,12 @@
 name = "futures-rate"
 version = "0.1.0"
 authors = ["ZUO, JACOB <chopinsky@live.com>"]
+license = "MIT"
+description = "This library provides easy tools to help Rust applications guide critical resources or code paths from being overwhelmed"
+keywords = ["rust", "futures", "rate-limit", "semaphore", "concurrency"]
+readme = "README.md"
+documentation = "https://docs.rs/futures-rate/"
+repository = "https://github.com/Chopinsky/futures-rate.git"
 edition = "2018"
 
 [dependencies]
