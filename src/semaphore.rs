@@ -1,8 +1,8 @@
+use crate::token_pool::{InnerPool, TokenFetcher};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::sync::Arc;
-use crate::token_pool::{InnerPool, TokenFetcher};
+use std::task::{Context, Poll};
 
 pub struct Semaphore<R, F>
 where
@@ -19,7 +19,7 @@ where
     F: Future<Output = R> + 'static,
 {
     pub(crate) fn new(fut: F, pool: Arc<InnerPool>) -> Semaphore<R, F> {
-        Semaphore { fut, pool, }
+        Semaphore { fut, pool }
     }
 }
 
@@ -33,7 +33,10 @@ where
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let (fut, pool) = unsafe {
             let ptr = Pin::get_unchecked_mut(self);
-            (Pin::new_unchecked(&mut ptr.fut), Pin::new_unchecked(&ptr.pool))
+            (
+                Pin::new_unchecked(&mut ptr.fut),
+                Pin::new_unchecked(&ptr.pool),
+            )
         };
 
         pool.wait_for_token();

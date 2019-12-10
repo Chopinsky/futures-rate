@@ -1,10 +1,10 @@
-use std::thread;
-use std::time::Duration;
 use futures::channel::mpsc::{self, UnboundedSender};
 use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
-use bottleneck::{self, semaphore::Semaphore, token_pool::TokenPool};
+use futures_rate::{Semaphore, TokenPool};
+use std::thread;
+use std::time::Duration;
 
 fn main() {
     let pool = ThreadPool::new().expect("Failed to build pool");
@@ -33,10 +33,13 @@ fn main() {
     println!("Values={:?}", values);
 }
 
-fn build_fut(tx: &UnboundedSender<i32>, token_pool: &TokenPool) -> Semaphore<(), impl Future<Output = ()>> {
+fn build_fut(
+    tx: &UnboundedSender<i32>,
+    token_pool: &TokenPool,
+) -> Semaphore<(), impl Future<Output = ()>> {
     let tx_clone = tx.clone();
 
-    token_pool.with_semaphore(async move {
+    token_pool.take_semaphore(async move {
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));
             tx_clone.unbounded_send(v).expect("Failed to send");

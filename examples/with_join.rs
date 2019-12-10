@@ -1,44 +1,37 @@
+use futures::{executor, future};
+use futures_rate::{Semaphore, TokenPool};
 use std::future::Future;
-use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
-use futures::{future, executor};
-use bottleneck::{self, semaphore::Semaphore, token_pool::TokenPool};
 
 fn main() {
-    let (tx, rx) = mpsc::channel::<i32>();
-
     let token_pool = TokenPool::new(1);
 
     let fut_values = async {
-        let fut_1 = build_fut(&tx, &token_pool);
-        let fut_2 = build_fut(&tx, &token_pool);
-
-        drop(tx);
+        let fut_1 = build_fut(0, &token_pool);
+        let fut_2 = build_fut(1, &token_pool);
 
         let fin = future::join(fut_1, fut_2);
         fin.await
     };
 
-    executor::block_on(fut_values);
+    let values = executor::block_on(fut_values);
 
-    let mut values = Vec::with_capacity(200);
-    while let Ok(val) = rx.recv() {
-        values.push(val);
-    }
-
-    println!("Values={:?}", values);
+    println!("Values from fut_1={:?}", values.0);
+    println!("Values from fut_2={:?}", values.1);
 }
 
-fn build_fut(tx: &Sender<i32>, token_pool: &TokenPool) -> Semaphore<(), impl Future<Output = ()>> {
-    let tx_clone = tx.clone();
-
-    token_pool.with_semaphore(async move {
+fn build_fut(
+    offset: i32,
+    token_pool: &TokenPool,
+) -> Semaphore<Vec<i32>, impl Future<Output = Vec<i32>>> {
+    token_pool.take_semaphore(async move {
+        let mut values = Vec::with_capacity(100);
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));
-            tx_clone.send(v).expect("Failed to send");
+            values.push(2 * v + offset);
         });
 
-
+        values
     })
 }
