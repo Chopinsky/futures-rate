@@ -212,11 +212,27 @@ impl GateKeeper {
         R: Send + 'static,
         F: Future<Output = R> + 'static,
     {
-        if self.closed.load(Ordering::Acquire) {
+        if self.is_closed() {
             return None;
         }
 
         Some(Permit::new(fut, Arc::clone(&self.inner)))
+    }
+
+    pub fn issue<R, F>(&self, fut: F) -> Result<impl Future<Output = R>, ()>
+    where
+        R: Send + 'static,
+        F: Future<Output = R> + 'static,
+    {
+        if self.is_closed() {
+            return Err(());
+        }
+
+        let permit = Permit::new(fut, Arc::clone(&self.inner));
+
+        Ok(async {
+            permit.await
+        })
     }
 
     pub fn close(&self) {
@@ -225,6 +241,11 @@ impl GateKeeper {
         while let Some(th) = self.inner.parking_lot.dequeue() {
             th.unpark();
         }
+    }
+
+    #[inline]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     fn spawn_token_generator(pool: Weak<InnerPool>) {
