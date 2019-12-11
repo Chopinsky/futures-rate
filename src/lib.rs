@@ -1,17 +1,17 @@
 mod enter;
+mod permit;
 mod semaphore;
 mod threads_queue;
-mod token_pool;
 
 pub use semaphore::Semaphore;
-pub use token_pool::TokenPool;
+pub use permit::Permit;
 
 pub mod prelude {
     pub use crate::semaphore::Semaphore;
-    pub use crate::TokenPool;
+    pub use crate::permit::Permit;
 }
 
-#[derive(PartialOrd, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
 pub enum RatioType {
     /// A cap of the number of the maximum number of tokens available at any given time.
     Static(usize),
