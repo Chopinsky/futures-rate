@@ -1,15 +1,15 @@
-use futures::{executor, future};
-use futures_rate::{Semaphore, Permit};
 use std::future::Future;
 use std::thread;
 use std::time::Duration;
+use futures::{executor, future};
+use futures_rate::{GateKeeper, Permit};
 
 fn main() {
-    let semaphore = Semaphore::new(1);
+    let gatekeeper = GateKeeper::new(1);
 
     let fut_values = async {
-        let fut_1 = build_fut(0, &semaphore);
-        let fut_2 = build_fut(1, &semaphore);
+        let fut_1 = build_fut(0, &gatekeeper);
+        let fut_2 = build_fut(1, &gatekeeper);
 
         let fin = future::join(fut_1, fut_2);
         fin.await
@@ -23,9 +23,9 @@ fn main() {
 
 fn build_fut(
     offset: i32,
-    semaphore: &Semaphore,
+    gatekeeper: &GateKeeper,
 ) -> Permit<Vec<i32>, impl Future<Output = Vec<i32>>> {
-    semaphore.register(async move {
+    gatekeeper.register(async move {
         let mut values = Vec::with_capacity(100);
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));

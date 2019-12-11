@@ -1,23 +1,23 @@
+use std::thread;
+use std::time::Duration;
 use futures::channel::mpsc::{self, UnboundedSender};
 use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
-use futures_rate::{Semaphore, Permit};
-use std::thread;
-use std::time::Duration;
+use futures_rate::{GateKeeper, Permit};
 
 fn main() {
     let pool = ThreadPool::new().expect("Failed to build pool");
     let (tx, rx) = mpsc::unbounded::<i32>();
 
-    let semaphore = Semaphore::new(1);
+    let gatekeeper = GateKeeper::new(1);
 
     let fut_values = async {
-        let fut_1 = build_fut(&tx, &semaphore);
+        let fut_1 = build_fut(&tx, &gatekeeper);
 
         pool.spawn_ok(fut_1);
 
-        let fut_2 = build_fut(&tx, &semaphore);
+        let fut_2 = build_fut(&tx, &gatekeeper);
 
         pool.spawn_ok(fut_2);
 
@@ -35,11 +35,11 @@ fn main() {
 
 fn build_fut(
     tx: &UnboundedSender<i32>,
-    semaphore: &Semaphore,
+    gatekeeper: &GateKeeper,
 ) -> Permit<(), impl Future<Output = ()>> {
     let tx_clone = tx.clone();
 
-    semaphore.register(async move {
+    gatekeeper.register(async move {
         (0..100).for_each(|v| {
             thread::sleep(Duration::from_millis(1));
             tx_clone.unbounded_send(v).expect("Failed to send");

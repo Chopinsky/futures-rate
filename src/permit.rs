@@ -1,4 +1,4 @@
-use crate::semaphore::{InnerPool, TokenFetcher};
+use crate::gatekeeper::{InnerPool, TokenFetcher};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
