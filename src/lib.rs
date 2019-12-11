@@ -47,17 +47,19 @@
 //! [`GateKeeper`]: struct.GateKeeper.html
 //!
 
+#![allow(deprecated)]
+
 mod enter;
 mod gatekeeper;
-mod permit;
+mod pass;
 mod threads_queue;
 
 pub use gatekeeper::GateKeeper;
-pub use permit::Permit;
+pub use pass::Permit;
 
 pub mod prelude {
     pub use crate::gatekeeper::GateKeeper;
-    pub use crate::permit::Permit;
+    pub use crate::pass::Permit;
 }
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]

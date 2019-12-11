@@ -2,7 +2,7 @@ use futures::channel::mpsc::{self, UnboundedSender};
 use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
-use futures_rate::{GateKeeper, Permit};
+use futures_rate::GateKeeper;
 use std::thread;
 use std::time::Duration;
 
@@ -30,14 +30,11 @@ fn main() {
     println!("Values={:?}", values);
 }
 
-fn build_fut(
-    tx: &UnboundedSender<i32>,
-    gatekeeper: &GateKeeper,
-) -> Permit<(), impl Future<Output = ()>> {
+fn build_fut(tx: &UnboundedSender<i32>, gatekeeper: &GateKeeper) -> impl Future<Output = ()> {
     let tx_clone = tx.clone();
 
     gatekeeper
-        .register(async move {
+        .issue(async move {
             (0..100).for_each(|v| {
                 thread::sleep(Duration::from_millis(1));
                 tx_clone.unbounded_send(v).expect("Failed to send");

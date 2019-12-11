@@ -2,7 +2,7 @@ use futures::channel::mpsc::{self, Sender};
 use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
-use futures_rate::{GateKeeper, Permit};
+use futures_rate::GateKeeper;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static SLOT: AtomicBool = AtomicBool::new(false);
@@ -36,11 +36,11 @@ fn main() {
     );
 }
 
-fn build_fut(tx: &Sender<()>, gatekeeper: &GateKeeper) -> Permit<(), impl Future<Output = ()>> {
+fn build_fut(tx: &Sender<()>, gatekeeper: &GateKeeper) -> impl Future<Output = ()> {
     let mut tx_clone = tx.clone();
 
     gatekeeper
-        .register(async move {
+        .issue(async move {
             // only 1 future can access the resource at any given time
             assert!(SLOT
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)

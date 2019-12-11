@@ -1,5 +1,5 @@
 use futures::{executor, future};
-use futures_rate::{GateKeeper, Permit};
+use futures_rate::GateKeeper;
 use std::future::Future;
 use std::thread;
 use std::time::Duration;
@@ -21,12 +21,9 @@ fn main() {
     println!("Values from fut_2={:?}", values.1);
 }
 
-fn build_fut(
-    offset: i32,
-    gatekeeper: &GateKeeper,
-) -> Permit<Vec<i32>, impl Future<Output = Vec<i32>>> {
+fn build_fut(offset: i32, gatekeeper: &GateKeeper) -> impl Future<Output = Vec<i32>> {
     gatekeeper
-        .register(async move {
+        .issue(async move {
             let mut values = Vec::with_capacity(100);
             (0..100).for_each(|v| {
                 thread::sleep(Duration::from_millis(1));

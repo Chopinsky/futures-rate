@@ -1,11 +1,14 @@
-use crate::permit::Permit;
-use crate::threads_queue::ThreadsQueue;
+#![allow(deprecated)]
+
+use crate::pass::{Permit, Ticket};
+use crate::threads_queue::{ThreadsQueue, WaitingList};
 use crate::{enter, RatioType};
 use std::future::Future;
 use std::sync::{
-    atomic::{AtomicUsize, AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, RwLock, Weak,
 };
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
@@ -16,6 +19,7 @@ pub(crate) struct InnerPool {
     token_counts: AtomicUsize,
     deficit: AtomicUsize,
     parking_lot: ThreadsQueue,
+    waiting_list: WaitingList,
     flavor: RwLock<RatioType>,
 }
 
@@ -46,6 +50,7 @@ pub(crate) trait TokenFetcher {
     fn add_token(&self, count: usize);
     fn wait_for_token(&self, fill_or_cancel: bool) -> bool;
     fn return_token(&self);
+    fn enqueue(&self, waker: Waker);
 }
 
 impl TokenFetcher for InnerPool {
@@ -53,7 +58,7 @@ impl TokenFetcher for InnerPool {
         self.token_counts.fetch_add(count, Ordering::AcqRel);
     }
 
-    fn wait_for_token(&self, fill_or_cancel: bool) -> bool {
+    fn wait_for_token(&self, get_or_cancel: bool) -> bool {
         let mut curr = 1;
         let mut attempts = 1;
 
@@ -61,7 +66,7 @@ impl TokenFetcher for InnerPool {
             self.token_counts
                 .compare_exchange(curr, curr - 1, Ordering::SeqCst, Ordering::Relaxed)
         {
-            if val == 0 && fill_or_cancel {
+            if val == 0 && get_or_cancel {
                 return false;
             }
 
@@ -110,31 +115,44 @@ impl TokenFetcher for InnerPool {
             let mut deficit = self.deficit.load(Ordering::Acquire);
 
             if deficit == 0 {
+                // return the token back
                 self.token_counts.fetch_add(1, Ordering::AcqRel);
-            } else {
-                let mut attempts = 1;
 
-                while let Err(curr) = self.deficit.compare_exchange(
-                    deficit,
-                    deficit - 1,
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                ) {
-                    if curr == 0 {
-                        self.token_counts.fetch_add(1, Ordering::AcqRel);
-                        return;
-                    }
+                // if we have tickets waiting, wake them up and let them poll again.
+                if let Some(waker) = self.waiting_list.dequeue() {
+                    waker.wake();
+                }
 
-                    deficit = curr;
+                return;
+            }
 
-                    thread::sleep(Duration::from_micros(1 << attempts));
+            // be a Lannister and always pay your debt first
+            let mut attempts = 1;
 
-                    if attempts < 8 {
-                        attempts += 1;
-                    }
+            while let Err(curr) = self.deficit.compare_exchange(
+                deficit,
+                deficit - 1,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ) {
+                if curr == 0 {
+                    self.token_counts.fetch_add(1, Ordering::AcqRel);
+                    return;
+                }
+
+                deficit = curr;
+
+                thread::sleep(Duration::from_micros(1 << attempts));
+
+                if attempts < 8 {
+                    attempts += 1;
                 }
             }
         }
+    }
+
+    fn enqueue(&self, waker: Waker) {
+        self.waiting_list.enqueue(waker);
     }
 }
 
@@ -155,6 +173,7 @@ impl GateKeeper {
                 token_counts: AtomicUsize::new(size),
                 deficit: AtomicUsize::new(0),
                 parking_lot: ThreadsQueue::new(),
+                waiting_list: WaitingList::new(),
                 flavor: RwLock::new(RatioType::Static(size)),
             }),
             closed: AtomicBool::from(false),
@@ -171,6 +190,7 @@ impl GateKeeper {
             token_counts: AtomicUsize::new(0),
             deficit: AtomicUsize::new(0),
             parking_lot: ThreadsQueue::new(),
+            waiting_list: WaitingList::new(),
             flavor: RwLock::new(RatioType::Fixed(count_per_ms)),
         });
 
@@ -213,6 +233,14 @@ impl GateKeeper {
         self.inner.set_flavor(ratio);
     }
 
+    #[deprecated(
+        since = "0.1.4",
+        note = "\
+            This API is deprecated in favor of the `issue()` method, which avoids the deadlock \
+            issues as a whole. This API, along with the associated struct `Permit`, will be removed \
+            in the 0.1.5 release.
+        "
+    )]
     pub fn register<R, F>(&self, fut: F) -> Option<Permit<R, F>>
     where
         R: Send + 'static,
@@ -223,6 +251,23 @@ impl GateKeeper {
         }
 
         Some(Permit::new(fut, Arc::clone(&self.inner)))
+    }
+
+    pub fn issue<R, F>(&self, fut: F) -> Option<impl Future<Output = R>>
+    where
+        R: Send + 'static,
+        F: Future<Output = R> + 'static,
+    {
+        if self.is_closed() {
+            return None;
+        }
+
+        let ticket = Ticket::new(Arc::clone(&self.inner));
+
+        Some(async move {
+            ticket.await;
+            fut.await
+        })
     }
 
     pub fn close(&self) {
