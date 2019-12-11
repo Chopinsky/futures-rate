@@ -24,7 +24,7 @@ where
     R: Send + 'static,
     F: Future<Output = R> + 'static,
 {
-    pub(crate) fn new(fut: F, pool: Arc<InnerPool>) -> Permit<R, F> {
+    pub(crate) fn new(fut: F, pool: Arc<InnerPool>) -> Self {
         Permit { fut, pool }
     }
 }
@@ -57,7 +57,7 @@ where
 
         // if we're the first future to try the gatekeeper, wait for a permit to be available
         if need_token {
-            pool.wait_for_token();
+            pool.wait_for_token(false);
 
             PERMIT_SET.with(|set| {
                 (*set.borrow_mut()).insert(pool_id);

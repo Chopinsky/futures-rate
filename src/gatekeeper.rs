@@ -44,7 +44,7 @@ impl InnerPool {
 
 pub(crate) trait TokenFetcher {
     fn add_token(&self, count: usize);
-    fn wait_for_token(&self);
+    fn wait_for_token(&self, fill_or_cancel: bool) -> bool;
     fn return_token(&self);
 }
 
@@ -53,7 +53,7 @@ impl TokenFetcher for InnerPool {
         self.token_counts.fetch_add(count, Ordering::AcqRel);
     }
 
-    fn wait_for_token(&self) {
+    fn wait_for_token(&self, fill_or_cancel: bool) -> bool {
         let mut curr = 1;
         let mut attempts = 1;
 
@@ -61,6 +61,10 @@ impl TokenFetcher for InnerPool {
             self.token_counts
                 .compare_exchange(curr, curr - 1, Ordering::SeqCst, Ordering::Relaxed)
         {
+            if val == 0 && fill_or_cancel {
+                return false;
+            }
+
             if val == 0 && !enter::test() {
                 // no token available at the moment, decide what to do, put the current thread
                 // into the queue
@@ -70,7 +74,7 @@ impl TokenFetcher for InnerPool {
                 thread::park();
 
                 // now we wake up because a new token available
-                return;
+                return true;
             }
 
             if val == 0 || attempts > 4 {
@@ -91,6 +95,8 @@ impl TokenFetcher for InnerPool {
             // mark the attempts
             attempts += 1;
         }
+
+        true
     }
 
     fn return_token(&self) {
@@ -217,22 +223,6 @@ impl GateKeeper {
         }
 
         Some(Permit::new(fut, Arc::clone(&self.inner)))
-    }
-
-    pub fn issue<R, F>(&self, fut: F) -> Result<impl Future<Output = R>, ()>
-    where
-        R: Send + 'static,
-        F: Future<Output = R> + 'static,
-    {
-        if self.is_closed() {
-            return Err(());
-        }
-
-        let permit = Permit::new(fut, Arc::clone(&self.inner));
-
-        Ok(async {
-            permit.await
-        })
     }
 
     pub fn close(&self) {

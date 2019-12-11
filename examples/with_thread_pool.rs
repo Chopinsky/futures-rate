@@ -13,19 +13,17 @@ fn main() {
 
     let fut_values = async {
         let fut_1 = build_fut(&tx, &gatekeeper);
-
         pool.spawn_ok(fut_1);
 
         let fut_2 = build_fut(&tx, &gatekeeper);
-
         pool.spawn_ok(fut_2);
 
         drop(tx);
 
-        let fut_values = rx.map(|v| v * 2).collect();
-
-        fut_values.await
+        rx.map(|v| v * 2).collect().await
     };
+
+    println!("Running ... ");
 
     let values: Vec<i32> = executor::block_on(fut_values);
 
