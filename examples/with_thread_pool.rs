@@ -1,15 +1,14 @@
-use std::thread;
-use std::time::Duration;
 use futures::channel::mpsc::{self, UnboundedSender};
 use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
 use futures_rate::{GateKeeper, Permit};
+use std::thread;
+use std::time::Duration;
 
 fn main() {
     let pool = ThreadPool::new().expect("Failed to build pool");
     let (tx, rx) = mpsc::unbounded::<i32>();
-
     let gatekeeper = GateKeeper::new(1);
 
     let fut_values = async {
@@ -39,10 +38,12 @@ fn build_fut(
 ) -> Permit<(), impl Future<Output = ()>> {
     let tx_clone = tx.clone();
 
-    gatekeeper.register(async move {
-        (0..100).for_each(|v| {
-            thread::sleep(Duration::from_millis(1));
-            tx_clone.unbounded_send(v).expect("Failed to send");
-        });
-    }).unwrap()
+    gatekeeper
+        .register(async move {
+            (0..100).for_each(|v| {
+                thread::sleep(Duration::from_millis(1));
+                tx_clone.unbounded_send(v).expect("Failed to send");
+            });
+        })
+        .unwrap()
 }
