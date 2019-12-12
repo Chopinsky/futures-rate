@@ -1,5 +1,7 @@
 use crossbeam_queue::SegQueue;
 use std::task::Waker;
+
+/*
 use std::thread::Thread;
 
 pub(crate) struct ThreadsQueue(SegQueue<Thread>);
@@ -17,6 +19,7 @@ impl ThreadsQueue {
         self.0.pop().ok()
     }
 }
+*/
 
 pub(crate) struct WaitingList(SegQueue<Waker>);
 

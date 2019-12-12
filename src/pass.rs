@@ -85,11 +85,15 @@ where
 
 pub(crate) struct Ticket {
     pool: Option<Arc<InnerPool>>,
+    pool_id: usize,
 }
 
 impl Ticket {
     pub(crate) fn new(pool: Arc<InnerPool>) -> Self {
-        Ticket { pool: Some(pool) }
+        Ticket {
+            pool: Some(pool),
+            pool_id: 0,
+        }
     }
 }
 
@@ -99,6 +103,10 @@ impl Drop for Ticket {
         // pool. A Lannister never forgets his or her debts!
         if let Some(pool) = self.pool.take() {
             pool.return_token();
+
+            TOKEN_BUCKET.with(|set| {
+                set.borrow_mut().remove(&self.pool_id);
+            });
         }
     }
 }
@@ -127,6 +135,7 @@ impl Future for Ticket {
             // futures, if any, won't bother to get (i.e. waste) another token.
             if need_token {
                 ref_this.pool.replace(pool);
+                ref_this.pool_id = pool_id;
 
                 TOKEN_BUCKET.with(|set| {
                     set.borrow_mut().insert(pool_id);
