@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 thread_local!(
-    static PERMIT_SET: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static TOKEN_BUCKET: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 );
 
 #[deprecated(
@@ -56,13 +56,13 @@ where
         let pool_id = pool.get_id();
 
         // check if the parent future has already obtained the permit
-        let need_token = PERMIT_SET.with(|set| !set.borrow().contains(&pool_id));
+        let need_token = TOKEN_BUCKET.with(|set| !set.borrow().contains(&pool_id));
 
         // if we're the first future to try the gatekeeper, wait for a permit to be available
         if need_token {
             pool.wait_for_token(false);
 
-            PERMIT_SET.with(|set| {
+            TOKEN_BUCKET.with(|set| {
                 (*set.borrow_mut()).insert(pool_id);
             });
         }
@@ -72,7 +72,7 @@ where
 
         // now we're ready to return the token, if we're the one requested it
         if need_token {
-            PERMIT_SET.with(|set| {
+            TOKEN_BUCKET.with(|set| {
                 (*set.borrow_mut()).remove(&pool_id);
             });
 
@@ -119,9 +119,7 @@ impl Future for Ticket {
         let pool_id = pool.get_id();
 
         // check if the parent future has already obtained the permit
-        let need_token = PERMIT_SET.with(|set|
-            !set.borrow().contains(&pool_id)
-        );
+        let need_token = TOKEN_BUCKET.with(|set| !set.borrow().contains(&pool_id));
 
         if !need_token || pool.wait_for_token(true) {
             // if the token is obtained by self, we still need the reference to the poll
@@ -130,8 +128,8 @@ impl Future for Ticket {
             if need_token {
                 ref_this.pool.replace(pool);
 
-                PERMIT_SET.with(|set| {
-                   set.borrow_mut().insert(pool_id);
+                TOKEN_BUCKET.with(|set| {
+                    set.borrow_mut().insert(pool_id);
                 });
             }
 

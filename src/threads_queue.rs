@@ -1,6 +1,6 @@
+use crossbeam_queue::SegQueue;
 use std::task::Waker;
 use std::thread::Thread;
-use crossbeam_queue::SegQueue;
 
 pub(crate) struct ThreadsQueue(SegQueue<Thread>);
 
