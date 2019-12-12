@@ -1,7 +1,7 @@
 #![allow(deprecated)]
 
 use crate::pass::{Permit, Ticket};
-use crate::threads_queue::{ThreadsQueue, WaitingList};
+use crate::threads_queue::WaitingList;
 use crate::{enter, RatioType};
 use std::future::Future;
 use std::sync::{
@@ -12,13 +12,14 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
-static UID: AtomicUsize = AtomicUsize::new(0);
+static UID: AtomicUsize = AtomicUsize::new(1);
 
 pub(crate) struct InnerPool {
     pool_id: usize,
+    closed: AtomicBool,
     token_counts: AtomicUsize,
     deficit: AtomicUsize,
-    parking_lot: ThreadsQueue,
+    //    parking_lot: ThreadsQueue,
     waiting_list: WaitingList,
     flavor: RwLock<RatioType>,
 }
@@ -27,6 +28,11 @@ impl InnerPool {
     #[inline]
     pub(crate) fn get_id(&self) -> usize {
         self.pool_id
+    }
+
+    #[inline]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     fn get_flavor(&self) -> RatioType {
@@ -44,6 +50,16 @@ impl InnerPool {
 
         *f = flavor;
     }
+
+    fn recover_one(&self) {
+        // return the token back
+        self.token_counts.fetch_add(1, Ordering::AcqRel);
+
+        // if we have tickets waiting, wake them up and let them poll again.
+        if let Some(waker) = self.waiting_list.dequeue() {
+            waker.wake();
+        }
+    }
 }
 
 pub(crate) trait TokenFetcher {
@@ -58,71 +74,66 @@ impl TokenFetcher for InnerPool {
         self.token_counts.fetch_add(count, Ordering::AcqRel);
     }
 
-    fn wait_for_token(&self, get_or_cancel: bool) -> bool {
+    fn wait_for_token(&self, immediate_or_cancel: bool) -> bool {
         let mut curr = 1;
-        let mut attempts = 1;
+        let mut attempts = 0;
 
         while let Err(val) =
             self.token_counts
                 .compare_exchange(curr, curr - 1, Ordering::SeqCst, Ordering::Relaxed)
         {
-            if val == 0 && get_or_cancel {
+            if val == 0 && immediate_or_cancel {
                 return false;
             }
 
-            if val == 0 && !enter::test() {
-                // no token available at the moment, decide what to do, put the current thread
-                // into the queue
-                self.parking_lot.enqueue(thread::current());
+            /*
+                        if val == 0 && !enter::test() {
+                            // no token available at the moment, decide what to do, put the current thread
+                            // into the queue
+                            self.parking_lot.enqueue(thread::current());
 
-                // put to sleep for now
-                thread::park();
+                            // put to sleep for now
+                            thread::park();
 
-                // now we wake up because a new token available
-                return true;
-            }
+                            // now we wake up because a new token available
+                            return true;
+                        }
+            */
 
-            if val == 0 || attempts > 4 {
-                // token is available but we can't grab it just yet, or there's no token but we
-                // can't park since we're in some pool's main thread --> let's take a break from
-                // contentious competitions.
-                if attempts < 8 {
-                    thread::sleep(Duration::from_micros(1 << attempts));
-                } else {
-                    attempts = 1;
-                    thread::yield_now();
-                }
+            // mark the attempts
+            attempts += 1;
+
+            // token is available but we can't grab it just yet, or there's no token but we
+            // can't park since we're in some pool's main thread --> let's take a break from
+            // contentious competitions.
+            if attempts < 8 {
+                thread::sleep(Duration::from_micros(1 << attempts));
+            } else {
+                attempts = 1;
+                thread::yield_now();
             }
 
             // we can retry again right away, use
             curr = if val > 0 { val } else { 1 };
-
-            // mark the attempts
-            attempts += 1;
         }
 
         true
     }
 
     fn return_token(&self) {
-        if let Some(th) = self.parking_lot.dequeue() {
-            // the front thread take the token, total number is unchanged
-            th.unpark();
-            return;
-        }
+        /*
+                if let Some(th) = self.parking_lot.dequeue() {
+                    // the front thread take the token, total number is unchanged
+                    th.unpark();
+                    return;
+                }
+        */
 
         if let RatioType::Static(_) = self.get_flavor() {
             let mut deficit = self.deficit.load(Ordering::Acquire);
 
             if deficit == 0 {
-                // return the token back
-                self.token_counts.fetch_add(1, Ordering::AcqRel);
-
-                // if we have tickets waiting, wake them up and let them poll again.
-                if let Some(waker) = self.waiting_list.dequeue() {
-                    waker.wake();
-                }
-
+                self.recover_one();
                 return;
             }
 
@@ -136,7 +147,7 @@ impl TokenFetcher for InnerPool {
                 Ordering::Relaxed,
             ) {
                 if curr == 0 {
-                    self.token_counts.fetch_add(1, Ordering::AcqRel);
+                    self.recover_one();
                     return;
                 }
 
@@ -158,7 +169,6 @@ impl TokenFetcher for InnerPool {
 
 pub struct GateKeeper {
     inner: Arc<InnerPool>,
-    closed: AtomicBool,
 }
 
 impl GateKeeper {
@@ -170,13 +180,13 @@ impl GateKeeper {
         GateKeeper {
             inner: Arc::new(InnerPool {
                 pool_id: UID.fetch_add(1, Ordering::SeqCst),
+                closed: AtomicBool::from(false),
                 token_counts: AtomicUsize::new(size),
                 deficit: AtomicUsize::new(0),
-                parking_lot: ThreadsQueue::new(),
+                //                parking_lot: ThreadsQueue::new(),
                 waiting_list: WaitingList::new(),
                 flavor: RwLock::new(RatioType::Static(size)),
             }),
-            closed: AtomicBool::from(false),
         }
     }
 
@@ -187,23 +197,21 @@ impl GateKeeper {
 
         let inner_pool = Arc::new(InnerPool {
             pool_id: UID.fetch_add(1, Ordering::SeqCst),
+            closed: AtomicBool::from(false),
             token_counts: AtomicUsize::new(0),
             deficit: AtomicUsize::new(0),
-            parking_lot: ThreadsQueue::new(),
+            //            parking_lot: ThreadsQueue::new(),
             waiting_list: WaitingList::new(),
             flavor: RwLock::new(RatioType::Fixed(count_per_ms)),
         });
 
         Self::spawn_token_generator(Arc::downgrade(&Arc::clone(&inner_pool)));
 
-        GateKeeper {
-            inner: inner_pool,
-            closed: AtomicBool::new(false),
-        }
+        GateKeeper { inner: inner_pool }
     }
 
     pub fn set_ratio(&mut self, ratio: RatioType) {
-        if self.closed.load(Ordering::Acquire) {
+        if self.inner.is_closed() {
             return;
         }
 
@@ -271,16 +279,22 @@ impl GateKeeper {
     }
 
     pub fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        self.inner.closed.store(true, Ordering::SeqCst);
 
+        while let Some(waker) = self.inner.waiting_list.dequeue() {
+            waker.wake();
+        }
+
+        /*
         while let Some(th) = self.inner.parking_lot.dequeue() {
             th.unpark();
         }
+        */
     }
 
     #[inline]
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.inner.is_closed()
     }
 
     fn spawn_token_generator(pool: Weak<InnerPool>) {

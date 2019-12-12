@@ -22,9 +22,7 @@ fn main() {
 
         drop(tx);
 
-        let fut_values = rx.map(|_| ()).collect::<Vec<()>>();
-
-        fut_values.await
+        rx.map(|_| ()).collect::<Vec<()>>().await
     };
 
     let count = executor::block_on(fut_values).len();
@@ -50,6 +48,8 @@ fn build_fut(tx: &Sender<()>, gatekeeper: &GateKeeper) -> impl Future<Output = (
             SLOT.store(false, Ordering::Release);
 
             tx_clone.try_send(()).expect("channel was closed ... ");
+
+            println!("one done ... ");
         })
         .unwrap()
 }

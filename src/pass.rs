@@ -85,11 +85,15 @@ where
 
 pub(crate) struct Ticket {
     pool: Option<Arc<InnerPool>>,
+    pool_id: usize,
 }
 
 impl Ticket {
     pub(crate) fn new(pool: Arc<InnerPool>) -> Self {
-        Ticket { pool: Some(pool) }
+        Ticket {
+            pool: Some(pool),
+            pool_id: 0,
+        }
     }
 }
 
@@ -99,6 +103,10 @@ impl Drop for Ticket {
         // pool. A Lannister never forgets his or her debts!
         if let Some(pool) = self.pool.take() {
             pool.return_token();
+
+            PERMIT_SET.with(|set| {
+                set.borrow_mut().remove(&self.pool_id);
+            });
         }
     }
 }
@@ -119,9 +127,7 @@ impl Future for Ticket {
         let pool_id = pool.get_id();
 
         // check if the parent future has already obtained the permit
-        let need_token = PERMIT_SET.with(|set|
-            !set.borrow().contains(&pool_id)
-        );
+        let need_token = PERMIT_SET.with(|set| !set.borrow().contains(&pool_id));
 
         if !need_token || pool.wait_for_token(true) {
             // if the token is obtained by self, we still need the reference to the poll
@@ -129,9 +135,10 @@ impl Future for Ticket {
             // futures, if any, won't bother to get (i.e. waste) another token.
             if need_token {
                 ref_this.pool.replace(pool);
+                ref_this.pool_id = pool_id;
 
                 PERMIT_SET.with(|set| {
-                   set.borrow_mut().insert(pool_id);
+                    set.borrow_mut().insert(pool_id);
                 });
             }
 
