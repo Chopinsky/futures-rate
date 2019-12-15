@@ -80,6 +80,10 @@ async fn work(gatekeeper: &GateKeeper) -> usize {
 }
 ``` 
 
+#### Naive Future Lock
+
+If setting the 
+
 
 ## Examples
 

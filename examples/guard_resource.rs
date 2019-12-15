@@ -3,11 +3,17 @@ use futures::executor::ThreadPool;
 use futures::StreamExt;
 use futures::{executor, Future};
 use futures_rate::GateKeeper;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static SLOT: AtomicBool = AtomicBool::new(false);
+static CURR_ACCESS_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn main() {
+    run_with_keeper();
+    run_without_keeper();
+}
+
+fn run_with_keeper() {
     let count = 8;
 
     let pool = ThreadPool::new().expect("Failed to build pool");
@@ -28,9 +34,9 @@ fn main() {
     let count = executor::block_on(fut_values).len();
 
     println!(
-        "After executing {} futures in the futures thread pool, values in SLOT = {:?}",
+        "After executing {} futures with the futures pool, # of concurrent access to SLOT = {:?}",
         count,
-        SLOT.load(Ordering::SeqCst)
+        CURR_ACCESS_COUNT.load(Ordering::SeqCst)
     );
 }
 
@@ -53,3 +59,5 @@ fn build_fut(tx: &Sender<()>, gatekeeper: &GateKeeper) -> impl Future<Output = (
         })
         .unwrap()
 }
+
+fn run_without_keeper() {}

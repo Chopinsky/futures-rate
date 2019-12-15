@@ -36,3 +36,11 @@ impl WaitingList {
         self.0.pop().ok()
     }
 }
+
+impl Iterator for WaitingList {
+    type Item = Waker;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.dequeue()
+    }
+}

@@ -51,15 +51,17 @@
 
 mod enter;
 mod gatekeeper;
+mod inner;
 mod pass;
 mod threads_queue;
 
-pub use gatekeeper::GateKeeper;
-pub use pass::Permit;
+pub use gatekeeper::{GateKeeper, GateKeeperConfig};
+pub use pass::{Permit, Token};
+use std::time::Duration;
 
 pub mod prelude {
-    pub use crate::gatekeeper::GateKeeper;
-    pub use crate::pass::Permit;
+    pub use crate::gatekeeper::{GateKeeper, GateKeeperConfig};
+    pub use crate::pass::Token;
 }
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
@@ -69,5 +71,20 @@ pub enum RatioType {
 
     /// A fixed number of tokens that will become available at the beginning of every millisecond.
     /// Note that this number will *not* count or include the ones not yet returned by the holders.
-    Fixed(usize),
+    FixedRate(usize, Duration),
+}
+
+#[derive(Debug, PartialOrd, PartialEq)]
+pub enum InterruptedReason {
+    Cancelled,
+}
+
+pub enum TokenPolicy {
+    /// The owner of the token will hold the token until running self (the future) to the end. The
+    /// token will not be returned even if a poll gets a `Poll::Pending`.
+    Preemptive,
+
+    /// The owner of the token will return the token at its first chance (i.e. when hitting a halt
+    /// and return `Poll::Pending`).
+    Cooperative,
 }
