@@ -56,12 +56,12 @@ mod pass;
 mod threads_queue;
 
 pub use gatekeeper::{GateKeeper, GateKeeperConfig};
-pub use pass::{Permit, Token};
+pub use pass::Permit;
 use std::time::Duration;
 
 pub mod prelude {
     pub use crate::gatekeeper::{GateKeeper, GateKeeperConfig};
-    pub use crate::pass::Token;
+    //    pub use crate::pass::Token;
 }
 
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]

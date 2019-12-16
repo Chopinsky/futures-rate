@@ -1,15 +1,19 @@
+use crate::inner::{InnerPool, TokenFetcher};
+use crate::InterruptedReason;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use crate::inner::{InnerPool, TokenFetcher};
-use crate::InterruptedReason;
 
 thread_local!(
     static PERMIT_SET: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 );
+
+pub(crate) trait TokenHolder {
+    fn render_token(&mut self);
+}
 
 #[deprecated(
     since = "0.1.4",
@@ -71,7 +75,7 @@ where
         // poll the future, do the actual work
         let res = fut.poll(ctx);
 
-        // now we're ready to return the token, if we're the one requested it
+        // now we're ready to return the TicketStub, if we're the one requested it
         if need_token {
             PERMIT_SET.with(|set| {
                 (*set.borrow_mut()).remove(&pool_id);
@@ -90,6 +94,7 @@ where
     F: Future<Output = R> + 'static,
 {
     pool_id: usize,
+    token_obtained: bool,
     pool: Option<Arc<InnerPool>>,
     fut: Option<Pin<Box<F>>>,
 }
@@ -102,18 +107,69 @@ where
     pub(crate) fn new(pool: Arc<InnerPool>, fut: Option<F>) -> Self {
         Ticket {
             pool_id: 0,
+            token_obtained: false,
             pool: Some(pool),
             fut: fut.map(Box::pin),
         }
     }
 
-    fn return_token(&mut self) {
-        if let Some(pool) = self.pool.take() {
+    fn request_token(&mut self) -> bool {
+        assert!(
+            !self.token_obtained,
+            "failed to return previously obtained token ... "
+        );
+
+        if let Some(pool) = self.pool.as_mut() {
+            if pool.request_token(true) {
+                let pool_id = pool.get_id();
+
+                PERMIT_SET.with(|set| {
+                    set.borrow_mut().insert(pool_id);
+                });
+
+                self.pool_id = pool_id;
+                self.token_obtained = true;
+
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn make_stub(&mut self) -> TicketStub {
+        // now the token has been transferred to the `stub`, we no longer own the token, and we
+        // won't need to render the token from the drop function.
+        self.token_obtained = false;
+
+        // generate the stub from the ticket
+        TicketStub {
+            pool: self.pool.take().unwrap(),
+        }
+    }
+}
+
+impl<R, F> TokenHolder for Ticket<R, F>
+where
+    R: Send + 'static,
+    F: Future<Output = R> + 'static,
+{
+    fn render_token(&mut self) {
+        if let Some(pool) = self.pool.as_ref() {
+            // if we own the reference to the pool, meaning we also own the token that we took, so
+            // we can return it now.
+            assert!(
+                self.token_obtained,
+                "failed at double-returning a previously obtained token ... "
+            );
+
             pool.return_token();
 
             PERMIT_SET.with(|set| {
                 set.borrow_mut().remove(&self.pool_id);
             });
+
+            self.token_obtained = false;
         }
     }
 }
@@ -124,9 +180,7 @@ where
     F: Future<Output = R> + 'static,
 {
     fn drop(&mut self) {
-        // if we still own the reference to the poll, it means we need to return the token to the
-        // pool. A Lannister never forgets his or her debts!
-        self.return_token();
+        self.render_token();
     }
 }
 
@@ -135,7 +189,7 @@ where
     R: Send + 'static,
     F: Future<Output = R> + 'static,
 {
-    type Output = Result<Option<R>, InterruptedReason>;
+    type Output = Result<(Option<TicketStub>, Option<R>), InterruptedReason>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(
@@ -143,61 +197,86 @@ where
             "The pass has already been issued, yet the ticket is polled for access again ... "
         );
 
-        //TODO: check token, if interrupted, return Poll::Ready(Err(InterruptedReason::Cancelled));
+        //TODO: check remote_control, if interrupted, return
+        //       Poll::Ready(Err(InterruptedReason::Cancelled));
 
         let ref_this = self.get_mut();
 
-        // retract the pool and current pool's id, to identify the gatekeeper
-        let pool = ref_this.pool.take().unwrap();
-        let pool_id = pool.get_id();
-
         // check if the parent future has already obtained the permit
-        let need_token = PERMIT_SET.with(|set| !set.borrow().contains(&pool_id));
+        let need_token = if ref_this.pool_id == 0 {
+            true
+        } else {
+            PERMIT_SET.with(|set|
+                !set.borrow().contains(&ref_this.pool_id)
+            )
+        };
 
-        if !need_token || pool.request_token(true) {
-            // if the token is obtained by self, we still need the reference to the poll
-            // when returning the token; also register that we have the token so the children
-            // futures, if any, won't bother to get (i.e. waste) another token.
-            if need_token {
-                PERMIT_SET.with(|set| {
-                    set.borrow_mut().insert(pool_id);
-                });
-
-                ref_this.pool.replace(pool);
-                ref_this.pool_id = pool_id;
-            }
-
-            // if we own the future (i.e. we're in the `TokenPolicy::Cooperative` mode), poll the future
-            // and return from what we got. Either way, the token will be returned afterwards -- either
-            // explicitly when results are pending, or implicitly when the `Ticket` goes out of the
-            // scope and return the token while being dropped.
+        if !need_token || ref_this.request_token() {
+            // if we own the future (i.e. we're in the `TicketStubPolicy::Cooperative` mode), poll
+            // the future and return from what we got. Either way, the TicketStub will be returned
+            // afterwards -- either explicitly when results are pending, or implicitly when the
+            // `Ticket` goes out of the scope and return the TicketStub while being dropped.
             if let Some(fut) = ref_this.fut.as_mut() {
                 return match fut.as_mut().poll(ctx) {
                     Poll::Pending => {
-                        // if we've requested a token, return it now
+                        // this is the key move for the cooperative mode: we return the token
+                        // immediately after a pending result, meaning we won't wait for the future
+                        // to complete before returning the token.
                         if need_token {
-                            ref_this.return_token();
+                            ref_this.render_token();
                         }
 
                         Poll::Pending
                     }
-                    Poll::Ready(val) => Poll::Ready(Ok(Some(val))),
+                    Poll::Ready(val) => {
+                        // the future is done, we will return the result. the token will be returned
+                        Poll::Ready(Ok((
+                            None,
+                            Some(val)
+                        )))
+                    }
                 };
             }
 
-            // if running in `TokenPolicy::Preemptive` mode, we get the token, and we create the
-            // TokenPass with the reference to the pool, and we will run the future to the completion.
-            // The token will be returned when the `Ticket` goes out of the scope after the future
-            // is completed.
-            return Poll::Ready(Ok(None));
+            // if running in `TicketStubPolicy::Preemptive` mode, we get the TicketStub, and we
+            // create the TicketStubPass with the reference to the pool, and we will run the future
+            // to the completion. The TicketStub will be returned when the `Ticket` goes out of the
+            // scope after the future is completed. This is the key move, since we generated a stub
+            // from the token, which will live until the future (owned by the intermediate future
+            // generator between gatekeeper and the ticket) is moved towards completion.
+            return Poll::Ready(Ok((
+                Some(ref_this.make_stub()),
+                None
+            )));
         }
 
-        // we can't get a token yet, make sure correct context are set, then we will go to sleep.
-        pool.enqueue(ctx.waker().clone());
-        ref_this.pool.replace(pool);
+        // we can't get a token yet, make sure correct context are set, then we will go back to wait.
+        if let Some(pool) = ref_this.pool.as_ref() {
+            // only enqueue to wake up if we're in the preemptive mode; otherwise the owning future
+            // will wake us up
+            if ref_this.fut.is_none() {
+                pool.enqueue(ctx.waker().clone());
+            }
+        }
 
         Poll::Pending
     }
 }
 
-pub struct Token {}
+pub(crate) struct TicketStub {
+    pool: Arc<InnerPool>,
+}
+
+impl TokenHolder for TicketStub {
+    fn render_token(&mut self) {
+        self.pool.return_token();
+    }
+}
+
+impl Drop for TicketStub {
+    fn drop(&mut self) {
+        // if we still own the reference to the poll, it means we need to return the TicketStub to the
+        // pool. A Lannister never forgets his or her debts!
+        self.render_token();
+    }
+}

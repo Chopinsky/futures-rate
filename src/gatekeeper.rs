@@ -1,12 +1,12 @@
 #![allow(deprecated)]
 
+use crate::inner::InnerPool;
+use crate::pass::{Permit, Ticket};
+use crate::{enter, InterruptedReason, RatioType, TokenPolicy};
 use std::future::Future;
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
-use crate::pass::{Permit, Ticket, Token};
-use crate::{enter, InterruptedReason, RatioType, TokenPolicy};
-use crate::inner::InnerPool;
 
 pub struct GateKeeper {
     inner: Arc<InnerPool>,
@@ -32,7 +32,7 @@ impl GateKeeper {
 
         let inner_pool = Arc::new(InnerPool::new(
             count_per_interval,
-            RatioType::FixedRate(count_per_interval, interval)
+            RatioType::FixedRate(count_per_interval, interval),
         ));
 
         Self::spawn_token_generator(Arc::downgrade(&Arc::clone(&inner_pool)));
@@ -74,19 +74,22 @@ impl GateKeeper {
 
         let ticket: Ticket<R, F> = Ticket::new(Arc::clone(&self.inner), None);
 
-        Some(async move {
-            if ticket.await.is_err() {
-                eprintln!("issuance of the pass has been disrupted unexpectedly ...");
-            }
+        let fut = async move {
+            let _stub = match ticket.await {
+                Ok((t, _)) => t,
+                Err(_e) => panic!("issuance of the pass has been disrupted unexpectedly ..."),
+            };
 
             fut.await
-        })
+        };
+
+        Some(fut)
     }
 
     pub fn issue_interruptable<R, F>(
         &self,
         fut: F,
-    ) -> Option<(impl Future<Output = Result<R, InterruptedReason>>, Token)>
+    ) -> Option<impl Future<Output = Result<R, InterruptedReason>>>
     where
         R: Send + 'static,
         F: Future<Output = R> + 'static,
@@ -97,23 +100,24 @@ impl GateKeeper {
 
         let ticket: Ticket<R, F> = Ticket::new(Arc::clone(&self.inner), None);
 
-        Some((
-            async move {
-                ticket.await?;
-                Ok(fut.await)
-            },
-            Token {},
-        ))
+        Some(
+            (
+                async move {
+                    ticket.await?;
+                    Ok(fut.await)
+                }
+                //            Token {},
+            ),
+        )
     }
 
     pub fn close(&self) {
         self.inner.close();
 
-//        self.inner.for_each(|w| {});
-
-//        while let Some(waker) = self.inner.waiting_list.dequeue() {
-//            waker.wake();
-//        }
+        //        self.inner.for_each(|w| {});
+        //        while let Some(waker) = self.inner.waiting_list.dequeue() {
+        //            waker.wake();
+        //        }
 
         /*
         while let Some(th) = self.inner.parking_lot.dequeue() {

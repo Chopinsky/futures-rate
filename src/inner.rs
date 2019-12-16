@@ -1,10 +1,10 @@
+use crate::threads_queue::WaitingList;
+use crate::RatioType;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::RwLock;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
-use crate::threads_queue::WaitingList;
-use crate::RatioType;
 
 static UID: AtomicUsize = AtomicUsize::new(1);
 
@@ -71,8 +71,7 @@ impl InnerPool {
     pub(crate) fn static_rebalance(&self, from: usize, to: usize) {
         if from < to {
             // need to add tokens
-            self.token_counts
-                .fetch_add(to - from, Ordering::SeqCst);
+            self.token_counts.fetch_add(to - from, Ordering::SeqCst);
         } else if from > to {
             // need to remove tokens
             self.deficit.fetch_add(from - to, Ordering::SeqCst);
@@ -107,43 +106,43 @@ impl TokenFetcher for InnerPool {
         let mut attempts = 0;
 
         while let Err(val) =
-        self.token_counts
-            .compare_exchange(curr, curr - 1, Ordering::SeqCst, Ordering::Relaxed)
-            {
-                if val == 0 && immediate_or_cancel {
-                    return false;
-                }
-
-                /*
-                            if val == 0 && !enter::test() {
-                                // no token available at the moment, decide what to do, put the current thread
-                                // into the queue
-                                self.parking_lot.enqueue(thread::current());
-
-                                // put to sleep for now
-                                thread::park();
-
-                                // now we wake up because a new token available
-                                return true;
-                            }
-                */
-
-                // mark the attempts
-                attempts += 1;
-
-                // token is available but we can't grab it just yet, or there's no token but we
-                // can't park since we're in some pool's main thread --> let's take a break from
-                // contentious competitions.
-                if attempts < 8 {
-                    thread::sleep(Duration::from_micros(1 << attempts));
-                } else {
-                    attempts = 1;
-                    thread::yield_now();
-                }
-
-                // we can retry again right away, use
-                curr = if val > 0 { val } else { 1 };
+            self.token_counts
+                .compare_exchange(curr, curr - 1, Ordering::SeqCst, Ordering::Relaxed)
+        {
+            if val == 0 && immediate_or_cancel {
+                return false;
             }
+
+            /*
+                        if val == 0 && !enter::test() {
+                            // no token available at the moment, decide what to do, put the current thread
+                            // into the queue
+                            self.parking_lot.enqueue(thread::current());
+
+                            // put to sleep for now
+                            thread::park();
+
+                            // now we wake up because a new token available
+                            return true;
+                        }
+            */
+
+            // mark the attempts
+            attempts += 1;
+
+            // token is available but we can't grab it just yet, or there's no token but we
+            // can't park since we're in some pool's main thread --> let's take a break from
+            // contentious competitions.
+            if attempts < 8 {
+                thread::sleep(Duration::from_micros(1 << attempts));
+            } else {
+                attempts = 1;
+                thread::yield_now();
+            }
+
+            // we can retry again right away, use
+            curr = if val > 0 { val } else { 1 };
+        }
 
         true
     }
