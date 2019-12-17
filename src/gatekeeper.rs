@@ -1,7 +1,7 @@
 #![allow(deprecated)]
 
 use crate::inner::InnerPool;
-use crate::pass::{Permit, Ticket};
+use crate::pass::{Envelope, Permit, Ticket};
 use crate::{enter, InterruptedReason, RatioType, TokenPolicy};
 use std::future::Future;
 use std::sync::{Arc, Weak};
@@ -72,15 +72,22 @@ impl GateKeeper {
             return None;
         }
 
-        let ticket: Ticket<R, F> = Ticket::new(Arc::clone(&self.inner), None);
+        let mut fut_wrapper = Some(fut);
+
+        let ticket: Ticket<R, F> = match self.policy {
+            TokenPolicy::Cooperative => Ticket::new(Arc::clone(&self.inner), fut_wrapper.take()),
+
+            TokenPolicy::Preemptive => Ticket::new(Arc::clone(&self.inner), None),
+        };
 
         let fut = async move {
             let _stub = match ticket.await {
-                Ok((t, _)) => t,
+                Ok(Envelope::Stub(t)) => t,
+                Ok(Envelope::Output(val)) => return val,
                 Err(_e) => panic!("issuance of the pass has been disrupted unexpectedly ..."),
             };
 
-            fut.await
+            fut_wrapper.take().unwrap().await
         };
 
         Some(fut)
@@ -113,17 +120,6 @@ impl GateKeeper {
 
     pub fn close(&self) {
         self.inner.close();
-
-        //        self.inner.for_each(|w| {});
-        //        while let Some(waker) = self.inner.waiting_list.dequeue() {
-        //            waker.wake();
-        //        }
-
-        /*
-        while let Some(th) = self.inner.parking_lot.dequeue() {
-            th.unpark();
-        }
-        */
     }
 
     #[inline]
@@ -133,26 +129,20 @@ impl GateKeeper {
 
     fn spawn_token_generator(pool: Weak<InnerPool>) {
         thread::spawn(move || {
-            let mut interval;
-
             loop {
-                match pool.upgrade() {
-                    // if some pool
-                    Some(p) => {
-                        if let RatioType::FixedRate(count, d) = p.get_flavor() {
-                            // set amount of tokens allowed in this time slab to the pool
-                            p.set_tokens(count);
-                            interval = d;
-                        } else {
-                            return;
-                        }
-                    }
+                if let Some(p) = pool.upgrade() {
+                    // if the pool ref still exists
+                    if let RatioType::FixedRate(count, d) = p.get_flavor() {
+                        // set amount of tokens allowed in this time slab to the pool
+                        p.set_tokens(count);
+                        thread::sleep(d);
 
-                    // the pool has quit, we shall too.
-                    None => return,
+                        continue;
+                    }
                 }
 
-                thread::sleep(interval);
+                // the pool has quit, we shall too.
+                return;
             }
         });
     }

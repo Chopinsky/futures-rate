@@ -1,10 +1,10 @@
 use crate::threads_queue::WaitingList;
 use crate::RatioType;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::RwLock;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
+use std::sync::RwLock;
 
 static UID: AtomicUsize = AtomicUsize::new(1);
 
@@ -15,18 +15,20 @@ pub(crate) struct InnerPool {
     deficit: AtomicUsize,
     //    parking_lot: ThreadsQueue,
     waiting_list: WaitingList,
-    flavor: RwLock<RatioType>,
+    flavor: (RwLock<RatioType>, AtomicBool),
 }
 
 impl InnerPool {
     pub(crate) fn new(size: usize, flavor: RatioType) -> Self {
+        let is_static_ratio = flavor.is_static_ratio();
+
         InnerPool {
             pool_id: UID.fetch_add(1, Ordering::SeqCst),
             closed: AtomicBool::from(false),
             token_counts: AtomicUsize::new(size),
             deficit: AtomicUsize::new(0),
             waiting_list: WaitingList::new(),
-            flavor: RwLock::new(flavor),
+            flavor: (RwLock::new(flavor), AtomicBool::new(is_static_ratio)),
         }
     }
 
@@ -49,23 +51,20 @@ impl InnerPool {
     }
 
     pub(crate) fn get_flavor(&self) -> RatioType {
-        *self
-            .flavor
-            .read()
-            .expect("Failed to get the GateKeeper flavor ... ")
+        *self.flavor.0.read().expect("the rate limit controller is corrupted ...")
     }
 
     pub(crate) fn set_flavor(&self, flavor: RatioType) {
-        let mut f = self
-            .flavor
-            .write()
-            .expect("Failed to set the GateKeeper flavor ... ");
-
-        *f = flavor;
+        self.flavor.1.store(flavor.is_static_ratio(), Ordering::Release);
+        *self.flavor.0.write().expect("the rate limit controller is corrupted ...") = flavor;
     }
 
     pub(crate) fn set_tokens(&self, count: usize) {
         self.token_counts.store(count, Ordering::SeqCst);
+
+        if count > 0 {
+            self.wake_up_many(count);
+        }
     }
 
     pub(crate) fn static_rebalance(&self, from: usize, to: usize) {
@@ -87,6 +86,20 @@ impl InnerPool {
             waker.wake();
         }
     }
+
+    fn wake_up_many(&self, count: usize) {
+        assert!(count > 0);
+
+        let mut remainder = count;
+        while let Some(waker) = self.waiting_list.dequeue() {
+            waker.wake();
+
+            remainder -= 1;
+            if remainder == 0 {
+                return;
+            }
+        }
+    }
 }
 
 pub(crate) trait TokenFetcher {
@@ -98,7 +111,12 @@ pub(crate) trait TokenFetcher {
 
 impl TokenFetcher for InnerPool {
     fn add_token(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+
         self.token_counts.fetch_add(count, Ordering::AcqRel);
+        self.wake_up_many(count);
     }
 
     fn request_token(&self, immediate_or_cancel: bool) -> bool {
@@ -156,35 +174,37 @@ impl TokenFetcher for InnerPool {
                 }
         */
 
-        if let RatioType::Static(_) = self.get_flavor() {
-            let mut deficit = self.deficit.load(Ordering::Acquire);
+        // if not a static ratio flavor, we won't return the token back.
+        if !self.flavor.1.load(Ordering::Acquire) {
+            return;
+        }
 
-            if deficit == 0 {
+        // if a static ratio flavor, check if we're in debt first.
+        let mut deficit = self.deficit.load(Ordering::Acquire);
+        if deficit == 0 {
+            self.recover_one();
+            return;
+        }
+
+        // be a Lannister and always pay your debt first
+        let mut attempts = 1;
+        while let Err(curr) = self.deficit.compare_exchange(
+            deficit,
+            deficit - 1,
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        ) {
+            if curr == 0 {
                 self.recover_one();
                 return;
             }
 
-            // be a Lannister and always pay your debt first
-            let mut attempts = 1;
+            deficit = curr;
 
-            while let Err(curr) = self.deficit.compare_exchange(
-                deficit,
-                deficit - 1,
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            ) {
-                if curr == 0 {
-                    self.recover_one();
-                    return;
-                }
+            thread::sleep(Duration::from_micros(1 << attempts));
 
-                deficit = curr;
-
-                thread::sleep(Duration::from_micros(1 << attempts));
-
-                if attempts < 8 {
-                    attempts += 1;
-                }
+            if attempts < 8 {
+                attempts += 1;
             }
         }
     }

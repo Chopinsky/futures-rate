@@ -11,6 +11,14 @@ thread_local!(
     static PERMIT_SET: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 );
 
+pub(crate) enum Envelope<R>
+where
+    R: Send + 'static,
+{
+    Stub(TicketStub),
+    Output(R),
+}
+
 pub(crate) trait TokenHolder {
     fn render_token(&mut self);
 }
@@ -189,7 +197,7 @@ where
     R: Send + 'static,
     F: Future<Output = R> + 'static,
 {
-    type Output = Result<(Option<TicketStub>, Option<R>), InterruptedReason>;
+    type Output = Result<Envelope<R>, InterruptedReason>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(
@@ -206,9 +214,7 @@ where
         let need_token = if ref_this.pool_id == 0 {
             true
         } else {
-            PERMIT_SET.with(|set|
-                !set.borrow().contains(&ref_this.pool_id)
-            )
+            PERMIT_SET.with(|set| !set.borrow().contains(&ref_this.pool_id))
         };
 
         if !need_token || ref_this.request_token() {
@@ -230,10 +236,7 @@ where
                     }
                     Poll::Ready(val) => {
                         // the future is done, we will return the result. the token will be returned
-                        Poll::Ready(Ok((
-                            None,
-                            Some(val)
-                        )))
+                        Poll::Ready(Ok(Envelope::Output(val)))
                     }
                 };
             }
@@ -244,19 +247,14 @@ where
             // scope after the future is completed. This is the key move, since we generated a stub
             // from the token, which will live until the future (owned by the intermediate future
             // generator between gatekeeper and the ticket) is moved towards completion.
-            return Poll::Ready(Ok((
-                Some(ref_this.make_stub()),
-                None
-            )));
+            return Poll::Ready(Ok(Envelope::Stub(ref_this.make_stub())));
         }
 
         // we can't get a token yet, make sure correct context are set, then we will go back to wait.
         if let Some(pool) = ref_this.pool.as_ref() {
             // only enqueue to wake up if we're in the preemptive mode; otherwise the owning future
             // will wake us up
-            if ref_this.fut.is_none() {
-                pool.enqueue(ctx.waker().clone());
-            }
+            pool.enqueue(ctx.waker().clone());
         }
 
         Poll::Pending

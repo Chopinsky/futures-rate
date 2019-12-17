@@ -1,6 +1,6 @@
 [package]
 name = "futures-rate"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["ZUO, JACOB <chopinsky@live.com>"]
 license = "MIT"
 description = "This library provides easy tools to help Rust applications guide critical resources or code paths from being overwhelmed"

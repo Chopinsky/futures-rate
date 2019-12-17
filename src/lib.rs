@@ -74,6 +74,16 @@ pub enum RatioType {
     FixedRate(usize, Duration),
 }
 
+impl RatioType {
+    pub(crate) fn is_static_ratio(&self) -> bool {
+        if let RatioType::Static(_) = self {
+            return true;
+        }
+
+        false
+    }
+}
+
 #[derive(Debug, PartialOrd, PartialEq)]
 pub enum InterruptedReason {
     Cancelled,

@@ -7,8 +7,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
-use std::time::Duration;
 
 static OWNER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -18,7 +16,7 @@ fn main() {
     let fut_count = 16;
 
     let mut keeper = GateKeeper::new(1);
-    //    keeper.set_policy(TokenPolicy::Cooperative);
+    keeper.set_policy(TokenPolicy::Cooperative);
 
     let fut_main = async {
         (0..fut_count).for_each(|id| {
@@ -76,7 +74,7 @@ fn file_reader_fut(
         OWNER_ID.store(0, Ordering::SeqCst);
 
         // since we own the access, take a nap and see if anyone can invade our space ...
-        thread::sleep(Duration::from_micros(4));
+        //        thread::sleep(Duration::from_micros(1));
 
         // send the result back...
         tx_clone.unbounded_send(char_count).expect("Failed to send");
