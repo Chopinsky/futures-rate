@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 static OWNER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -19,11 +21,15 @@ fn main() {
     keeper.set_policy(TokenPolicy::Cooperative);
 
     let fut_main = async {
+        let created_at = SystemTime::now();
+
         (0..fut_count).for_each(|id| {
             let mut path = PathBuf::new();
             path.push("./README.md");
 
-            let fut = keeper.issue(file_reader_fut(id + 1, path, &tx)).unwrap();
+            let fut = keeper.issue(
+                file_reader_fut(id + 1, path, false, &created_at, &tx)
+            ).unwrap();
 
             pool.spawn_ok(fut);
         });
@@ -40,9 +46,12 @@ fn main() {
 fn file_reader_fut(
     id: usize,
     path: PathBuf,
+    sleep: bool,
+    created_at: &SystemTime,
     tx: &UnboundedSender<usize>,
 ) -> impl Future<Output = ()> + 'static {
     let tx_clone = tx.clone();
+    let start = created_at.clone();
 
     async move {
         assert!(
@@ -54,6 +63,11 @@ fn file_reader_fut(
                 id
             )
         );
+
+        // since we own the access, take a nap and see if anyone can invade our space ...
+        if sleep {
+            thread::sleep(Duration::from_millis(10));
+        }
 
         // read a file from the location
         let input = match File::open(path) {
@@ -73,8 +87,11 @@ fn file_reader_fut(
         // reset the owner to null
         OWNER_ID.store(0, Ordering::SeqCst);
 
-        // since we own the access, take a nap and see if anyone can invade our space ...
-        //        thread::sleep(Duration::from_micros(1));
+        let since_the_epoch = SystemTime::now()
+            .duration_since(start)
+            .expect("Time went backwards");
+
+        println!("Work done at: {}", since_the_epoch.as_millis());
 
         // send the result back...
         tx_clone.unbounded_send(char_count).expect("Failed to send");

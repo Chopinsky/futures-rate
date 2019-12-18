@@ -59,14 +59,6 @@ impl InnerPool {
         *self.flavor.0.write().expect("the rate limit controller is corrupted ...") = flavor;
     }
 
-    pub(crate) fn set_tokens(&self, count: usize) {
-        self.token_counts.store(count, Ordering::SeqCst);
-
-        if count > 0 {
-            self.wake_up_many(count);
-        }
-    }
-
     pub(crate) fn static_rebalance(&self, from: usize, to: usize) {
         if from < to {
             // need to add tokens
@@ -104,6 +96,7 @@ impl InnerPool {
 
 pub(crate) trait TokenFetcher {
     fn add_token(&self, count: usize);
+    fn reset_token(&self, count: usize);
     fn request_token(&self, fill_or_cancel: bool) -> bool;
     fn return_token(&self);
     fn enqueue(&self, waker: Waker);
@@ -117,6 +110,14 @@ impl TokenFetcher for InnerPool {
 
         self.token_counts.fetch_add(count, Ordering::AcqRel);
         self.wake_up_many(count);
+    }
+
+    fn reset_token(&self, count: usize) {
+        self.token_counts.store(count, Ordering::SeqCst);
+
+        if count > 0 {
+            self.wake_up_many(count);
+        }
     }
 
     fn request_token(&self, immediate_or_cancel: bool) -> bool {

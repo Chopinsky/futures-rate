@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use crate::inner::InnerPool;
+use crate::inner::{InnerPool, TokenFetcher};
 use crate::pass::{Envelope, Permit, Ticket};
 use crate::{enter, InterruptedReason, RatioType, TokenPolicy};
 use std::future::Future;
@@ -134,7 +134,7 @@ impl GateKeeper {
                     // if the pool ref still exists
                     if let RatioType::FixedRate(count, d) = p.get_flavor() {
                         // set amount of tokens allowed in this time slab to the pool
-                        p.set_tokens(count);
+                        p.reset_token(count);
                         thread::sleep(d);
 
                         continue;

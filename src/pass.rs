@@ -6,6 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::thread;
+use std::time::Duration;
 
 thread_local!(
     static PERMIT_SET: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
@@ -102,6 +104,7 @@ where
     F: Future<Output = R> + 'static,
 {
     pool_id: usize,
+    pending_count: usize,
     token_obtained: bool,
     pool: Option<Arc<InnerPool>>,
     fut: Option<Pin<Box<F>>>,
@@ -115,6 +118,7 @@ where
     pub(crate) fn new(pool: Arc<InnerPool>, fut: Option<F>) -> Self {
         Ticket {
             pool_id: 0,
+            pending_count: 0,
             token_obtained: false,
             pool: Some(pool),
             fut: fut.map(Box::pin),
@@ -222,14 +226,24 @@ where
             // the future and return from what we got. Either way, the TicketStub will be returned
             // afterwards -- either explicitly when results are pending, or implicitly when the
             // `Ticket` goes out of the scope and return the TicketStub while being dropped.
-            if let Some(fut) = ref_this.fut.as_mut() {
-                return match fut.as_mut().poll(ctx) {
+            if let Some(fut_info) = ref_this.fut.as_mut() {
+                if ref_this.pending_count >= 4 {
+                    thread::sleep(Duration::from_micros((1 << ref_this.pending_count) as u64));
+
+                    if ref_this.pending_count >= 10 {
+                        ref_this.pending_count = 4;
+                    }
+                }
+
+                //TODO: add unwind safety on future poll
+                return match fut_info.as_mut().poll(ctx) {
                     Poll::Pending => {
                         // this is the key move for the cooperative mode: we return the token
                         // immediately after a pending result, meaning we won't wait for the future
                         // to complete before returning the token.
                         if need_token {
                             ref_this.render_token();
+                            ref_this.pending_count += 1;
                         }
 
                         Poll::Pending
@@ -277,4 +291,22 @@ impl Drop for TicketStub {
         // pool. A Lannister never forgets his or her debts!
         self.render_token();
     }
+}
+
+#[inline]
+pub fn abort_on_panic<R>(f: impl FnOnce() -> R) -> R {
+    struct Bomb;
+
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            //TODO: less aggressive here
+            std::process::abort();
+        }
+    }
+
+    let bomb = Bomb;
+    let t = f();
+    std::mem::forget(bomb);
+
+    t
 }
