@@ -18,7 +18,7 @@ fn main() {
     let fut_count = 16;
 
     let mut keeper = GateKeeper::new(1);
-    keeper.set_policy(TokenPolicy::Cooperative);
+    keeper.set_token_policy(TokenPolicy::Cooperative);
 
     let fut_main = async {
         let created_at = SystemTime::now();

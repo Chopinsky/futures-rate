@@ -2,15 +2,29 @@
 
 use crate::inner::{InnerPool, TokenFetcher};
 use crate::pass::{Envelope, Permit, Ticket};
-use crate::{enter, InterruptedReason, RatioType, TokenPolicy};
+use crate::{enter, InterruptedReason, RatioType, TokenPolicy, SpinPolicy};
 use std::future::Future;
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
 
+struct KeeperPolicy {
+    token: TokenPolicy,
+    spin: SpinPolicy,
+}
+
+impl Default for KeeperPolicy {
+    fn default() -> Self {
+        KeeperPolicy {
+            token: TokenPolicy::Preemptive,
+            spin: SpinPolicy::InplaceWait,
+        }
+    }
+}
+
 pub struct GateKeeper {
     inner: Arc<InnerPool>,
-    policy: TokenPolicy,
+    policy: KeeperPolicy,
 }
 
 impl GateKeeper {
@@ -21,7 +35,7 @@ impl GateKeeper {
 
         GateKeeper {
             inner: Arc::new(InnerPool::new(size, RatioType::Static(size))),
-            policy: TokenPolicy::Preemptive,
+            policy: Default::default(),
         }
     }
 
@@ -39,7 +53,7 @@ impl GateKeeper {
 
         GateKeeper {
             inner: inner_pool,
-            policy: TokenPolicy::Preemptive,
+            policy: Default::default(),
         }
     }
 
@@ -74,11 +88,14 @@ impl GateKeeper {
 
         let mut fut_wrapper = Some(fut);
 
-        let ticket: Ticket<R, F> = match self.policy {
+        let mut ticket: Ticket<R, F> = match self.policy.token {
             TokenPolicy::Cooperative => Ticket::new(Arc::clone(&self.inner), fut_wrapper.take()),
-
             TokenPolicy::Preemptive => Ticket::new(Arc::clone(&self.inner), None),
         };
+
+        if self.policy.spin != SpinPolicy::InplaceWait {
+            ticket.set_spin_policy(self.policy.spin);
+        }
 
         let fut = async move {
             let _stub = match ticket.await {
@@ -149,13 +166,18 @@ impl GateKeeper {
 }
 
 pub trait GateKeeperConfig {
-    fn set_policy(&mut self, policy: TokenPolicy);
     fn set_ratio(&mut self, ratio: RatioType);
+    fn set_token_policy(&mut self, policy: TokenPolicy);
+    fn set_spin_policy(&mut self, spin: SpinPolicy);
 }
 
 impl GateKeeperConfig for GateKeeper {
-    fn set_policy(&mut self, policy: TokenPolicy) {
-        self.policy = policy;
+    fn set_token_policy(&mut self, policy: TokenPolicy) {
+        self.policy.token = policy;
+    }
+
+    fn set_spin_policy(&mut self, spin: SpinPolicy) {
+        self.policy.spin = spin;
     }
 
     fn set_ratio(&mut self, ratio: RatioType) {

@@ -98,3 +98,12 @@ pub enum TokenPolicy {
     /// and return `Poll::Pending`).
     Cooperative,
 }
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum SpinPolicy {
+    None,
+
+    InplaceWait,
+
+    Yield,
+}

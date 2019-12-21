@@ -1,5 +1,5 @@
 use crate::inner::{InnerPool, TokenFetcher};
-use crate::InterruptedReason;
+use crate::{InterruptedReason, SpinPolicy};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::future::Future;
@@ -108,6 +108,7 @@ where
     token_obtained: bool,
     pool: Option<Arc<InnerPool>>,
     fut: Option<Pin<Box<F>>>,
+    spin_policy: SpinPolicy,
 }
 
 impl<R, F> Ticket<R, F>
@@ -122,7 +123,12 @@ where
             token_obtained: false,
             pool: Some(pool),
             fut: fut.map(Box::pin),
+            spin_policy: SpinPolicy::InplaceWait,
         }
+    }
+
+    pub(crate) fn set_spin_policy(&mut self, spin: SpinPolicy) {
+        self.spin_policy = spin;
     }
 
     fn request_token(&mut self) -> bool {
@@ -227,23 +233,32 @@ where
             // afterwards -- either explicitly when results are pending, or implicitly when the
             // `Ticket` goes out of the scope and return the TicketStub while being dropped.
             if let Some(fut_info) = ref_this.fut.as_mut() {
-                if ref_this.pending_count >= 4 {
-                    thread::sleep(Duration::from_micros((1 << ref_this.pending_count) as u64));
-
-                    if ref_this.pending_count >= 10 {
-                        ref_this.pending_count = 4;
-                    }
-                }
-
                 //TODO: add unwind safety on future poll
                 return match fut_info.as_mut().poll(ctx) {
                     Poll::Pending => {
+                        let spin = ref_this.spin_policy != SpinPolicy::None;
+
                         // this is the key move for the cooperative mode: we return the token
                         // immediately after a pending result, meaning we won't wait for the future
                         // to complete before returning the token.
                         if need_token {
                             ref_this.render_token();
-                            ref_this.pending_count += 1;
+
+                            if spin {
+                                ref_this.pending_count += 1;
+                            }
+                        }
+
+                        if ref_this.pending_count >= 4 && spin {
+                            if ref_this.spin_policy == SpinPolicy::Yield {
+                                thread::yield_now();
+                            } else {
+                                thread::sleep(Duration::from_micros((1 << ref_this.pending_count) as u64));
+                            }
+
+                            if ref_this.pending_count >= 10 {
+                                ref_this.pending_count = 4;
+                            }
                         }
 
                         Poll::Pending
