@@ -1,5 +1,6 @@
 use crate::threads_queue::WaitingList;
 use crate::RatioType;
+use std::cmp::Ordering as Ord;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::Waker;
 use std::thread;
@@ -60,13 +61,11 @@ impl InnerPool {
     }
 
     pub(crate) fn static_rebalance(&self, from: usize, to: usize) {
-        if from < to {
-            // need to add tokens
-            self.token_counts.fetch_add(to - from, Ordering::SeqCst);
-        } else if from > to {
-            // need to remove tokens
-            self.deficit.fetch_add(from - to, Ordering::SeqCst);
-        }
+        match from.cmp(&to) {
+            Ord::Greater => { self.token_counts.fetch_add(to - from, Ordering::SeqCst); },
+            Ord::Less => { self.token_counts.fetch_add(to - from, Ordering::SeqCst); },
+            _ => { /* if balanced, do nothing ... */ },
+        };
     }
 
     fn recover_one(&self) {
@@ -132,20 +131,6 @@ impl TokenFetcher for InnerPool {
                 return false;
             }
 
-            /*
-                        if val == 0 && !enter::test() {
-                            // no token available at the moment, decide what to do, put the current thread
-                            // into the queue
-                            self.parking_lot.enqueue(thread::current());
-
-                            // put to sleep for now
-                            thread::park();
-
-                            // now we wake up because a new token available
-                            return true;
-                        }
-            */
-
             // mark the attempts
             attempts += 1;
 
@@ -167,14 +152,6 @@ impl TokenFetcher for InnerPool {
     }
 
     fn return_token(&self) {
-        /*
-                if let Some(th) = self.parking_lot.dequeue() {
-                    // the front thread take the token, total number is unchanged
-                    th.unpark();
-                    return;
-                }
-        */
-
         // if not a static ratio flavor, we won't return the token back.
         if !self.flavor.1.load(Ordering::Acquire) {
             return;
