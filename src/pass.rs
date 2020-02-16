@@ -233,8 +233,9 @@ where
             // afterwards -- either explicitly when results are pending, or implicitly when the
             // `Ticket` goes out of the scope and return the TicketStub while being dropped.
             if let Some(fut_info) = ref_this.fut.as_mut() {
-                //TODO: add unwind safety on future poll
-                return match fut_info.as_mut().poll(ctx) {
+                let result = abort_on_panic(|| fut_info.as_mut().poll(ctx));
+
+                return match result {
                     Poll::Pending => {
                         let spin = ref_this.spin_policy != SpinPolicy::None;
 
@@ -309,7 +310,7 @@ impl Drop for TicketStub {
 }
 
 #[inline]
-pub fn abort_on_panic<R>(f: impl FnOnce() -> R) -> R {
+fn abort_on_panic<R>(f: impl FnOnce() -> R) -> R {
     struct Bomb;
 
     impl Drop for Bomb {
