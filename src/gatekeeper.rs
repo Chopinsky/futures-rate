@@ -1,5 +1,6 @@
 #![allow(deprecated)]
 
+use crate::controller::Controller;
 use crate::inner::{InnerPool, TokenFetcher};
 use crate::pass::{Envelope, Permit, Ticket};
 use crate::{enter, InterruptedReason, RatioType, TokenPolicy, SpinPolicy};
@@ -113,7 +114,7 @@ impl GateKeeper {
     pub fn issue_interruptable<R, F>(
         &self,
         fut: F,
-    ) -> Option<impl Future<Output = Result<R, InterruptedReason>>>
+    ) -> Option<(impl Future<Output = Result<R, InterruptedReason>>, Controller)>
     where
         R: Send + 'static,
         F: Future<Output = R> + 'static,
@@ -124,15 +125,13 @@ impl GateKeeper {
 
         let ticket: Ticket<R, F> = Ticket::new(Arc::clone(&self.inner), None);
 
-        Some(
-            (
-                async move {
-                    ticket.await?;
-                    Ok(fut.await)
-                }
-                //            Token {},
-            ),
-        )
+        Some((
+            async move {
+                ticket.await?;
+                Ok(fut.await)
+            },
+            Controller {},
+         ))
     }
 
     pub fn close(&self) {

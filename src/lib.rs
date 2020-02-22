@@ -49,6 +49,7 @@
 
 #![allow(deprecated)]
 
+mod controller;
 mod enter;
 mod gatekeeper;
 mod inner;
